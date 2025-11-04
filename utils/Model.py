@@ -11,12 +11,33 @@ from torch.nn.attention.flex_attention import (
     create_mask,
     flex_attention,
 )
-from torch.nn.attention import and_masks, or_masks
+try:
+    from torch.nn.attention import and_masks, or_masks
+except (ImportError, AttributeError):
+    # Fallback for PyTorch < 2.7
+    def or_masks(mask1, mask2):
+        """Combine two mask functions with OR logic"""
+        def combined_mask(b, h, q_idx, kv_idx):
+            return mask1(b, h, q_idx, kv_idx) | mask2(b, h, q_idx, kv_idx)
+        return combined_mask
+    
+    def and_masks(mask1, mask2):
+        """Combine two mask functions with AND logic"""
+        def combined_mask(b, h, q_idx, kv_idx):
+            return mask1(b, h, q_idx, kv_idx) & mask2(b, h, q_idx, kv_idx)
+        return combined_mask
+
 
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
     
-    def __init__(self, ndim, bias):
+    def __init__(self, ndim: int, bias: bool):
+        """Initialise LayerNorm
+        
+        Args:
+            ndim (int): Dimension of the layer
+            bias (bool): Bias yes or no
+        """
         super().__init__()
         self.weight = nn.Parameter(torch.ones(ndim))
         self.bias = nn.Parameter(torch.zeros(ndim)) if bias else None
@@ -28,12 +49,15 @@ class TunedSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
+        assert config.sliding_window <= config.block_size
         
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, config.bias)
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, config.bias)
         
         self.n_head = config.n_head
         self.n_embd = config.n_embd
+        self.softcap = config.softcap
+        self.sliding_window = config.sliding_window
         
         # Fixed: changed 'flex' to match the actual check
         self.flex = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
@@ -68,8 +92,12 @@ class TunedSelfAttention(nn.Module):
             
             # If suffix_prefix_length is provided, create suffix_prefix mask
             if suffix_prefix_length is not None:
+                # Convert list to tensor for vmap compatibility
+                suffix_prefix_tensor = torch.tensor(suffix_prefix_length, device=x.device, dtype=torch.long)
+                
                 def suffix_prefix_mask(b, h, q_idx, kv_idx):
-                    return kv_idx < suffix_prefix_length[b]
+                    # Use tensor indexing instead of list indexing
+                    return kv_idx < suffix_prefix_tensor[b]
                 
                 # Combine prefix and sliding window causal masks
                 combined_mask = or_masks(suffix_prefix_mask, sliding_window_causal)
@@ -178,6 +206,7 @@ class GPTConfig:
     n_layer: int = 32
     n_head: int = 32
     n_embd: int = 2560
+    dropout: float = 0.0
     softcap: int = 20
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
 
@@ -192,6 +221,7 @@ class GPT(nn.Module):
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
+            drop = nn.Dropout(config.dropout if hasattr(config, 'dropout') else 0.0),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
