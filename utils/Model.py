@@ -68,7 +68,7 @@ class TunedSelfAttention(nn.Module):
                                         .view(1, 1, config.block_size, config.block_size))
 
 
-    def forward(self, x, suffix_prefix_length: list=None):
+    def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
         
         q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
@@ -90,22 +90,8 @@ class TunedSelfAttention(nn.Module):
                 window_mask = q_idx - kv_idx <= self.sliding_window
                 return causal_mask & window_mask
             
-            # If suffix_prefix_length is provided, create suffix_prefix mask
-            if suffix_prefix_length is not None:
-                # Convert list to tensor for vmap compatibility
-                suffix_prefix_tensor = torch.tensor(suffix_prefix_length, device=x.device, dtype=torch.long)
-                
-                def suffix_prefix_mask(b, h, q_idx, kv_idx):
-                    # Use tensor indexing instead of list indexing
-                    return kv_idx < suffix_prefix_tensor[b]
-                
-                # Combine prefix and sliding window causal masks
-                combined_mask = or_masks(suffix_prefix_mask, sliding_window_causal)
-            else:
-                combined_mask = sliding_window_causal
-            
             # Create block mask
-            block_mask = create_block_mask(combined_mask, B=B, H=None, Q_LEN=T, KV_LEN=T)
+            block_mask = create_block_mask(sliding_window_causal, B=B, H=None, Q_LEN=T, KV_LEN=T)
             
             # Apply flex attention
             y = flex_attention(q, k, v, score_mod=score_mod, block_mask=block_mask)
@@ -128,16 +114,7 @@ class TunedSelfAttention(nn.Module):
             # Combine: causal AND sliding window
             combined_mask = causal_mask & sliding_mask
             
-            # If suffix_prefix_length is provided, allow attention to prefix tokens
-            if suffix_prefix_length is not None:
-                # For each batch element, allow attention to its prefix
-                for b in range(B):
-                    # All positions can attend to tokens before suffix_prefix_length[b]
-                    combined_mask_b = combined_mask.clone()
-                    combined_mask_b[:, :suffix_prefix_length[b]] = True
-                    score[b, :, :, :] = score_orig[b, :, :, :].masked_fill(~combined_mask_b, float('-inf'))
-            else:
-                score = score.masked_fill(~combined_mask.view(1, 1, T, T), float('-inf'))
+            score = score.masked_fill(~combined_mask.view(1, 1, T, T), float('-inf'))
             
             # Apply softcapping
             score = score / self.softcap
@@ -192,8 +169,8 @@ class Block(nn.Module):
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = GLU(config)
 
-    def forward(self, x, suffix_prefix_length: list=None):
-        x = x + self.attn(self.ln_1(x), suffix_prefix_length=suffix_prefix_length)
+    def forward(self, x):
+        x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -202,13 +179,13 @@ class Block(nn.Module):
 class GPTConfig:
     block_size: int = 4096
     sliding_window: int = 1024
-    vocab_size: int = 100608 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency and multiplied by 2
+    vocab_size: int = 50257
     n_layer: int = 32
     n_head: int = 32
-    n_embd: int = 2560
+    n_embd: int = 4096  # 4096/32 = 128 ✓
     dropout: float = 0.0
     softcap: int = 20
-    bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    bias: bool = False
 
 
 class GPT(nn.Module):
@@ -262,7 +239,7 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, suffix_prefix_length=None, targets=None):
+    def forward(self, idx, targets=None):
         device = idx.device
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
@@ -273,7 +250,7 @@ class GPT(nn.Module):
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
-            x = block(x, suffix_prefix_length=suffix_prefix_length)
+            x = block(x)
         x = self.transformer.ln_f(x)
         
         if targets is not None:
@@ -348,3 +325,30 @@ class GPT(nn.Module):
         flops_promised = 283.8e12
         mfu = flops_achieved / flops_promised
         return mfu
+    
+    @torch.no_grad()
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+        """
+        Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
+        the sequence max_new_tokens times, feeding the predictions back into the model each time.
+        Most likely you'll want to make sure to be in model.eval() mode of operation for this.
+        """
+        for _ in range(max_new_tokens):
+            # if the sequence context is growing too long we must crop it at block_size
+            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
+            # forward the model to get the logits for the index in the sequence
+            logits, _ = self(idx_cond)
+            # pluck the logits at the final step and scale by desired temperature
+            logits = logits[:, -1, :] / temperature
+            # optionally crop the logits to only the top k options
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = -float('Inf')
+            # apply softmax to convert logits to (normalized) probabilities
+            probs = F.softmax(logits, dim=-1)
+            # sample from the distribution
+            idx_next = torch.multinomial(probs, num_samples=1)
+            # append sampled index to the running sequence and continue
+            idx = torch.cat((idx, idx_next), dim=1)
+        
+        return idx
