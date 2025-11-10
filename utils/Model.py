@@ -63,9 +63,12 @@ class TunedSelfAttention(nn.Module):
         self.flex = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         if not self.flex:
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
-            # causal mask to ensure that attention is only applied to the left in the input sequence
-            self.register_buffer("mask", torch.tril(torch.ones(config.block_size, config.block_size))
+            # causal mask and slyding window mask for non-flex path
+            self.register_buffer("causal", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
+            self.register_buffer("window", torch.triu(torch.ones(config.block_size, config.block_size), diagonal=-self.sliding_window +1)
+                                        .view(1, 1, config.block_size, config.block_size))
+            self.register_buffer("bias", self.causal * self.window) 
 
 
     def forward(self, x):
@@ -97,24 +100,10 @@ class TunedSelfAttention(nn.Module):
             y = flex_attention(q, k, v, score_mod=score_mod, block_mask=block_mask)
         else:
             # Manual attention computation for non-flex path
-            # Save original scores before masking for prefix unmask later
-            score_orig = (q @ k.transpose(-2, -1)) * (1.0 / np.sqrt(k.size(-1)))
-            score = score_orig.clone()
+            score = (q @ k.transpose(-2, -1)) * (1.0 / np.sqrt(k.size(-1)))
             
-            # Start with causal + sliding window mask
-            causal_mask = torch.tril(torch.ones(T, T, device=x.device, dtype=torch.bool))
-            
-            # Apply sliding window: only attend within window
-            sliding_mask = torch.zeros(T, T, device=x.device, dtype=torch.bool)
-            for i in range(T):
-                for j in range(T):
-                    if i >= j and (i - j) <= self.sliding_window:
-                        sliding_mask[i, j] = True
-            
-            # Combine: causal AND sliding window
-            combined_mask = causal_mask & sliding_mask
-            
-            score = score.masked_fill(~combined_mask.view(1, 1, T, T), float('-inf'))
+            # Masks
+            score = score.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
             
             # Apply softcapping
             score = score / self.softcap
