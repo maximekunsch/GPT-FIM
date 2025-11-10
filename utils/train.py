@@ -87,12 +87,12 @@ class DataLoaderFIM:
         # Then reshape to (B, T)
         total_len = len(buf) - 1
         
-        split1 = random.randint(1, total_len - 2)
-        split2 = random.randint(split1 + 1, total_len - 1)
+        split1 = random.randint(1, total_len - 2) # Where Prefix ends
+        split2 = random.randint(split1 + 1, total_len - 1) #Where Suffix starts 
         
         prefix = buf[:split1]
         middle = buf[split1:split2]
-        suffix = buf[split2:-1]
+        suffix = buf[split2:]
         
         # SPM format
         x_seq = torch.cat([
@@ -104,7 +104,7 @@ class DataLoaderFIM:
             middle
         ])
         
-        # Standard next-token prediction targets
+        
         y_seq = x_seq[1:]
         x_seq = x_seq[:-1]
         
@@ -124,7 +124,7 @@ texte = DataLoaderFIM(B=4, T=32)
 config = GPTConfig(
     block_size=128,
     sliding_window=32,
-    vocab_size=50304,  # ← Changed! (50257 rounded up to nearest multiple of 64)
+    vocab_size=50304,
     n_layer=26,
     n_head=32,
     n_embd=1024,
@@ -152,16 +152,14 @@ enc = tiktoken.get_encoding('gpt2')
 x = " Complete this function that sums a and b def sum(a, b):"
 tokens = enc.encode(x)
 tokens = torch.tensor(tokens, dtype= torch.long)
-tokens = tokens.unsqueeze(0).repeat(trials, 1)
+tokens = tokens.unsqueeze(0).repeat(trials, 1) #(trials, len(tokens))
 
 x = tokens.to(device)
 
-# Generate - note the correct argument order
-y = model.generate(x, max_iter, temperature=1.0, top_k=50)  # ← Fixed order
-
+# Generate
+y = model.generate(x, max_iter, temperature=1.0, top_k=50)  #
 # Decode each generated sequence
 for i in range(trials):
-    # Get just the generated tokens (skip the prompt)
-    generated_tokens = y[i].tolist()  # ← Convert to list
+    generated_tokens = y[i].tolist() 
     output = enc.decode(generated_tokens)
     logger.info(f"Trial {i+1}:\n{output}\n")
