@@ -171,7 +171,7 @@ class GPTConfig:
     vocab_size: int = 50257
     n_layer: int = 32
     n_head: int = 32
-    n_embd: int = 4096  # 4096/32 = 128 ✓
+    n_embd: int = 4096  # 4096/32 = 128 head size
     dropout: float = 0.0
     softcap: int = 20
     bias: bool = False

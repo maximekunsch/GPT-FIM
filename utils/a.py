@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 import numpy as np
+from dataclasses import dataclass
 
 class LayerNorm(nn.MModule):
     def __init__(self, ndim, bias):
