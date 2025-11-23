@@ -157,7 +157,7 @@ tokens = tokens.unsqueeze(0).repeat(trials, 1) #(trials, len(tokens))
 x = tokens.to(device)
 
 # Generate
-y = model.generate(x, max_iter, temperature=1.0, top_k=50)  #
+y = model.generate(x, max_iter, temperature=0.3, top_k=5)  #
 # Decode each generated sequence
 for i in range(trials):
     generated_tokens = y[i].tolist() 
