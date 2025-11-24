@@ -64,11 +64,9 @@ class TunedSelfAttention(nn.Module):
         if not self.flex:
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
             # causal mask and slyding window mask for non-flex path
-            self.register_buffer("causal", torch.tril(torch.ones(config.block_size, config.block_size))
-                                        .view(1, 1, config.block_size, config.block_size))
-            self.register_buffer("window", torch.triu(torch.ones(config.block_size, config.block_size), diagonal=-self.sliding_window +1)
-                                        .view(1, 1, config.block_size, config.block_size))
-            self.register_buffer("bias", self.causal * self.window) 
+            causal = torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size)
+            window = torch.triu(torch.ones(config.block_size, config.block_size), diagonal=-self.sliding_window +1).view(1, 1, config.block_size, config.block_size)
+            self.register_buffer("mask", causal * window)
 
 
     def forward(self, x):
@@ -103,7 +101,7 @@ class TunedSelfAttention(nn.Module):
             score = (q @ k.transpose(-2, -1)) * (1.0 / np.sqrt(k.size(-1)))
             
             # Masks
-            score = score.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
+            score = score.masked_fill(self.mask[:, :, :T, :T] == 0, float('-inf'))
             
             # Apply softcapping
             score = score / self.softcap
