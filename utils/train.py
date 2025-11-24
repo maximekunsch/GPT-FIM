@@ -6,6 +6,26 @@ import numpy as np
 
 from logging_config import logger
 
+import wandb
+
+# Initialize a new run
+wandb.init(
+    project="gpt-training",  # your project name
+    config={
+        "batch_size": 1,
+        "block_size": 256,
+        "learning_rate": 8e-5,
+        "n_layer": 9,
+        "n_head": 16,
+        "n_embd": 2048,
+        "dropout": 0
+    }
+)
+
+config = wandb.config
+
+
+
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 device_type = 'cuda' if 'cuda' in device else 'cpu'
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
@@ -49,12 +69,17 @@ class DataLoaderFIM:
         with open('python_alpaca_train.txt', 'r', encoding='utf-8') as f:
             text = f.read()
         
-        enc = tiktoken.get_encoding('gpt2')
+        enc = tiktoken.get_encoding('cl100k_base')
+        vocab_size = enc.max_token_value + 1
+        print(vocab_size)  
         
         # Add FIM tokens if not in vocabulary
-        self.fim_prefix_id = enc.encode('FIM_PREFIX')[0]
-        self.fim_middle_id = enc.encode('FIM_MIDDLE')[0]
-        self.fim_suffix_id = enc.encode('FIM_SUFFIX')[0]
+        allowed = {"<|fim_prefix|>", "<|fim_middle|>", "<|fim_suffix|>", "<|endoftext|>"}
+        
+        self.fim_prefix_id = enc.encode("<|fim_prefix|>", allowed_special=allowed)[0]
+        self.fim_middle_id = enc.encode("<|fim_middle|>", allowed_special=allowed)[0]
+        self.fim_suffix_id = enc.encode("<|fim_suffix|>", allowed_special=allowed)[0]
+        self.end_id = enc.encode("<|endoftext|>", allowed_special=allowed)[0]
         
         tokens = enc.encode(text)
         self.tokens = torch.tensor(tokens)
@@ -101,9 +126,9 @@ class DataLoaderFIM:
             torch.tensor([self.fim_prefix_id]),
             prefix,
             torch.tensor([self.fim_middle_id]),
-            middle
+            middle,
+            torch.tensor([self.end_id]),
         ])
-        
         
         y_seq = x_seq[1:]
         x_seq = x_seq[:-1]
@@ -119,24 +144,24 @@ class DataLoaderFIM:
         
         return x_seq.view(B, T), y_seq.view(B, T)
 
-texte = DataLoaderFIM(B=4, T=32)
+texte = DataLoaderFIM(B=1, T=256)
 
 config = GPTConfig(
-    block_size=128,
+    block_size=256,
     sliding_window=32,
-    vocab_size=50304,
-    n_layer=26,
-    n_head=32,
-    n_embd=1024,
+    vocab_size=100277,
+    n_layer=9,
+    n_head=16,
+    n_embd=2048,
     softcap=20,
     dropout=0,
     bias=False
 )
 model = GPT(config)
 model.to(device)
-optim = torch.optim.AdamW(model.parameters(), lr= 2e-4)
+optim = torch.optim.AdamW(model.parameters(), lr= 8e-5)
 
-for i in range(5000):
+for i in range(500):
     x, y = texte.next_batch()
     x, y = x.to(device), y.to(device)
     optim.zero_grad()
@@ -144,20 +169,26 @@ for i in range(5000):
     loss.backward()
     optim.step()
     logger.info(f"Step {i} loss: {loss.item()}")
+    wandb.log({"step": i, "loss": loss.item()})
+
+torch.save(model.state_dict(), "gpt_model.pt")
+# wandb.save("gpt_model.pt")
 
 model.eval()
 max_iter = 45
 trials = 5
 enc = tiktoken.get_encoding('gpt2')
-x = " Complete this function that sums a and b def sum(a, b):"
-tokens = enc.encode(x)
+allowed = {"<|fim_prefix|>", "<|fim_middle|>", "<|fim_suffix|>", "<|endoftext|>"}
+x = "<|fim_suffix|> return c <|fim_prefix|> def sum(a, b): <|fim_middle|> c ="
+tokens = enc.encode(x, allowed_special=allowed)
 tokens = torch.tensor(tokens, dtype= torch.long)
 tokens = tokens.unsqueeze(0).repeat(trials, 1) #(trials, len(tokens))
 
 x = tokens.to(device)
 
 # Generate
-y = model.generate(x, max_iter, temperature=0.3, top_k=5)  #
+y = model.generate(x, max_iter, temperature=0.3, top_k=5)
+
 # Decode each generated sequence
 for i in range(trials):
     generated_tokens = y[i].tolist() 
