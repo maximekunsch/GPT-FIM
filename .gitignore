@@ -3,6 +3,9 @@
 .python-version
 
 __pycache__/
-.vscode/
+.vscode
 logs/
 *.txt
+.vscode/launch.json
+wandb/
+*.pt
