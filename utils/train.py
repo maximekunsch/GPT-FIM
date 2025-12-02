@@ -95,7 +95,7 @@ class DataLoaderFIM:
         # Decide whether to use FIM for this batch
         if random.random() < self.fim_rate:
             # Apply FIM transformation to the whole buffer
-            x, y = self._create_fim_single(buf, B, T)
+            x, y, mask= self._create_fim_single(buf, B, T)
         else:
             # Standard autoregressive training
             x = buf[:-1].view(B, T)
@@ -126,28 +126,32 @@ class DataLoaderFIM:
             torch.tensor([self.fim_prefix_id]),
             prefix,
             torch.tensor([self.fim_middle_id]),
-            middle,
-            torch.tensor([self.end_id]),
+            middle
         ])
         
         y_seq = x_seq[1:]
         x_seq = x_seq[:-1]
         
+        mask = torch.full_like(y_seq, -100)
+        mask[-(len(middle) + 2):] = y_seq[-(len(middle) + 2):]
+        
         # Truncate or pad to B*T
         if len(x_seq) > B*T:
             x_seq = x_seq[:B*T]
             y_seq = y_seq[:B*T]
+            mask = mask[:B*T]
         else:
             pad_len = B*T - len(x_seq)
             x_seq = torch.cat([x_seq, torch.zeros(pad_len, dtype=torch.long)])
             y_seq = torch.cat([y_seq, torch.full((pad_len,), -100)])
+            mask = torch.cat([mask, torch.full((pad_len,), -100)])
         
-        return x_seq.view(B, T), y_seq.view(B, T)
+        return x_seq.view(B, T), y_seq.view(B, T), mask.view(B, T)
 
-texte = DataLoaderFIM(B=1, T=256)
+texte = DataLoaderFIM(B=1, T=1024)
 
 config = GPTConfig(
-    block_size=256,
+    block_size=1024,
     sliding_window=32,
     vocab_size=100277,
     n_layer=9,
@@ -161,7 +165,7 @@ model = GPT(config)
 model.to(device)
 optim = torch.optim.AdamW(model.parameters(), lr= 8e-5)
 
-for i in range(500):
+for i in range(44400):
     x, y = texte.next_batch()
     x, y = x.to(device), y.to(device)
     optim.zero_grad()
