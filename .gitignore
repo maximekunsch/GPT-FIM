@@ -9,3 +9,7 @@ logs/
 .vscode/launch.json
 wandb/
 *.pt
+dataset.py
+dream.py
+test_model.py
+prepare_data.py
