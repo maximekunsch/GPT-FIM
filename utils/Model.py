@@ -59,7 +59,7 @@ class TunedSelfAttention(nn.Module):
         self.softcap = config.softcap
         self.sliding_window = config.sliding_window
         
-        # Fixed: changed 'flex' to match the actual check
+        # Check if we have flex
         self.flex = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         if not self.flex:
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
@@ -139,7 +139,7 @@ class GLU(nn.Module):
         # Other side
         x_2 = self.c_fc_2(x)
         
-        # "Re-assemble" (AVENGERSSSS)
+        # "Re-assemble"
         x = x_1 * x_2
         
         # Project
@@ -190,10 +190,8 @@ class GPT(nn.Module):
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        # with weight tying when using torch.compile() some warnings get generated:
-        # "UserWarning: functional_call was passed multiple values for tied weights.
-        # This behavior is deprecated and will be an error in future versions"
-        # not 100% sure what this is, so far seems to be harmless. TODO investigate
+        
+        # Weight tying
         self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
         
         # init all weights
@@ -241,11 +239,10 @@ class GPT(nn.Module):
         x = self.transformer.ln_f(x)
         
         if targets is not None:
-            # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
         else:
-            # inference-time mini-optimization: only forward the lm_head on the very last position
+            # inference-time optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
         
@@ -298,7 +295,7 @@ class GPT(nn.Module):
         return optimizer
     
     def estimate_mfu(self, fwdbwd_per_iter, dt):
-        """ estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS """
+        """ estimate model flops utilization (MFU) in units of RTX4070 Super bfloat16 peak FLOPS """
         # first estimate the number of flops we do per iteration.
         # see PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
         N = self.get_num_params()
@@ -307,7 +304,7 @@ class GPT(nn.Module):
         flops_per_token = 6*N + 12*L*H*Q*T
         flops_per_fwdbwd = flops_per_token * T
         flops_per_iter = flops_per_fwdbwd * fwdbwd_per_iter
-        # express our flops throughput as ratio of A100 bfloat16 peak flops
+        # express our flops throughput as ratio of RTX4070 Super bfloat16 peak flops
         flops_achieved = flops_per_iter * (1.0/dt) # per second
         flops_promised = 283.8e12
         mfu = flops_achieved / flops_promised
@@ -321,21 +318,21 @@ class GPT(nn.Module):
         Most likely you'll want to make sure to be in model.eval() mode of operation for this.
         """
         for _ in range(max_new_tokens):
-            # if the sequence context is growing too long we must crop it at block_size
+            # Check if it is bigger than our block size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
-            # forward the model to get the logits for the index in the sequence
+            # Forward
             logits, _ = self(idx_cond)
-            # pluck the logits at the final step and scale by desired temperature
+            # Temperature
             logits = logits[:, -1, :] / temperature
-            # optionally crop the logits to only the top k options
+            # Top_k probaibilities (optional)
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits[logits < v[:, [-1]]] = -float('Inf')
-            # apply softmax to convert logits to (normalized) probabilities
+            # Softmax
             probs = F.softmax(logits, dim=-1)
-            # sample from the distribution
+            # Pick according to the probability ratio
             idx_next = torch.multinomial(probs, num_samples=1)
-            # append sampled index to the running sequence and continue
+            # Add the generated pick
             idx = torch.cat((idx, idx_next), dim=1)
         
         return idx

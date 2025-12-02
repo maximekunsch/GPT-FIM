@@ -10,10 +10,10 @@ import wandb
 
 # Initialize a new run
 wandb.init(
-    project="gpt-training",  # your project name
+    project="gpt-training", 
     config={
         "batch_size": 1,
-        "block_size": 256,
+        "block_size": 1024,
         "learning_rate": 8e-5,
         "n_layer": 9,
         "n_head": 16,
@@ -113,7 +113,7 @@ class DataLoaderFIM:
         total_len = len(buf) - 1
         
         split1 = random.randint(1, total_len - 2) # Where Prefix ends
-        split2 = random.randint(split1 + 1, total_len - 1) #Where Suffix starts 
+        split2 = random.randint(split1 + 1, total_len - 1) # Where Suffix starts 
         
         prefix = buf[:split1]
         middle = buf[split1:split2]
@@ -161,6 +161,7 @@ config = GPTConfig(
     dropout=0,
     bias=False
 )
+
 model = GPT(config)
 model.to(device)
 optim = torch.optim.AdamW(model.parameters(), lr= 8e-5)
