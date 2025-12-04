@@ -298,7 +298,7 @@ def eval_generate(model):
 
 
 def eval_dataset(model, x, y_true):
-    # WIP
+    # WIP, not operational
     
     
     model.eval()
@@ -353,7 +353,7 @@ texte = DataLoaderFIM(B=1, T=1024)
 
 config = GPTConfig(
     block_size=1024,
-    sliding_window=32,
+    sliding_window=1024, # Currenly no sliding window, 
     vocab_size=100277,
     n_layer=9,
     n_head=16,
