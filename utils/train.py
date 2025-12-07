@@ -92,6 +92,7 @@ class DataLoaderFIM:
         self.fim_prefix_id = self.enc.encode("<|fim_prefix|>", allowed_special=allowed)[0]
         self.fim_middle_id = self.enc.encode("<|fim_middle|>", allowed_special=allowed)[0]
         self.fim_suffix_id = self.enc.encode("<|fim_suffix|>", allowed_special=allowed)[0]
+        self.end_of_text_id = self.enc.encode("<|endoftext|>", allowed_special=allowed)[0]
         
         # rolling token buffer
         self.buffer = torch.empty(0, dtype=torch.long)
@@ -108,7 +109,7 @@ class DataLoaderFIM:
                 sample = next(self.ds_iter)
             
             code = sample["content"]
-            tokens = self.enc.encode(code)
+            tokens =  [self.end_of_text_id] + self.enc.encode(code)
             self.buffer = torch.cat([self.buffer, torch.tensor(tokens, dtype=torch.long)])
     
     def next_batch(self):
