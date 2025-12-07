@@ -290,7 +290,7 @@ def eval_generate(model):
     # Generate
     with torch.no_grad():
         y = model.generate(x, max_iter, temperature=0.3, top_k=5)
-        y_2 = model.generate(x, max_iter, temperature=0.3, top_k=5)
+        y_2 = model.generate(x_2, max_iter, temperature=0.3, top_k=5)
     
     # Decode each generated sequence
     for i in range(trials):
@@ -300,10 +300,6 @@ def eval_generate(model):
         output_2 = enc.decode(generated_tokens_2)
         logger.info(f"Trial {i+1}:\n{output}\n")
         logger.info(f"Trial {i+1}:\n{output_2}\n")
-    # WIP
-    #wandb.log({
-    #    "eval/generate": output,
-    #})
     
     model.train()
 
@@ -356,7 +352,9 @@ def eval_dataset(model, x, y_true):
     
     model.train()
 
-texte = DataLoaderFIM(B=1, T=1024)
+B = 1
+T = 1024
+texte = DataLoaderFIM(B=B, T=T)
 
 #eval = DataLoaderFIMeval(B=1, T=1024)
 #x_eval, y_eval = eval.next_batch()
@@ -379,8 +377,13 @@ model.to(device)
 # optim = torch.optim.AdamW(model.parameters(), lr= 8e-5)
 optim = model.configure_optimizers(weight_decay=0.1, learning_rate=8e-5, betas=(0.9, 0.95), device_type=device)
 
-total_steps = 6500
-warmup_steps = 200
+total_tokens_per_step = 524288
+micro_tokens = B * T
+total_steps = 19000
+warmup_steps = 300
+
+grad_acc_steps = total_tokens_per_step // micro_tokens
+
 
 def lr_lambda(step):
     if step < warmup_steps:
@@ -392,21 +395,18 @@ scheduler = torch.optim.lr_scheduler.LambdaLR(optim, lr_lambda)
 
 model.train()
 for i in range(total_steps):
-    x, y = texte.next_batch()
-    x, y = x.to(device), y.to(device)
     optim.zero_grad()
-    logits, loss = model(x, y)
-    
-    # Depricated, was in case middle is empty, but sanity check
-    if torch.isnan(loss) or torch.isinf(loss):
-        logger.info("NaN detected")
-        continue
-    
-    # Backward
-    loss.backward()
+    for micro_step in range(grad_acc_steps):
+        x, y = texte.next_batch()
+        x, y = x.to(device), y.to(device)
+        
+        logits, loss = model(x, y)
+        
+        # Backward
+        loss.backward()
     
     # Ensure FIM stability
-    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     
     # Optimizer
     optim.step()
@@ -417,7 +417,7 @@ for i in range(total_steps):
     # WANDB
     current_lr = optim.param_groups[0]["lr"]
     logger.info(f"Step {i} loss: {loss.item()}")
-    wandb.log({"step": i, "loss": loss.item(), "lr": current_lr})
+    wandb.log({"step": i, "loss": loss.item(), "lr": current_lr, 'norm': norm})
     if i % 500 == 0:
         eval_generate(model)
         # eval_dataset(model, x, y) not ready yet
