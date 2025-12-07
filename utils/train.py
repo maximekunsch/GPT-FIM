@@ -274,22 +274,32 @@ def eval_generate(model):
     enc = tiktoken.get_encoding('cl100k_base')
     allowed = {"<|fim_prefix|>", "<|fim_middle|>", "<|fim_suffix|>", "<|endoftext|>"}
     x = "<|fim_suffix|> return c <|fim_prefix|> def sum(a: int, b: int): <|fim_middle|>"
+    x_2 = "def sum(a: int, b: int): # returns the sum of a and b"
+    
     tokens = enc.encode(x, allowed_special=allowed)
     tokens = torch.tensor(tokens, dtype= torch.long)
     tokens = tokens.unsqueeze(0).repeat(trials, 1) #(trials, len(tokens))
     
+    tokens_2 = enc.encode(x_2, allowed_special=allowed)
+    tokens_2 = torch.tensor(tokens_2, dtype= torch.long)
+    tokens_2 = tokens_2.unsqueeze(0).repeat(trials, 1) #(trials, len(tokens))
+    
     x = tokens.to(device)
+    x_2 = tokens_2.to(device)
     
     # Generate
     with torch.no_grad():
         y = model.generate(x, max_iter, temperature=0.3, top_k=5)
+        y_2 = model.generate(x, max_iter, temperature=0.3, top_k=5)
     
     # Decode each generated sequence
     for i in range(trials):
         generated_tokens = y[i].tolist() 
         output = enc.decode(generated_tokens)
+        generated_tokens_2 = y_2[i].tolist() 
+        output_2 = enc.decode(generated_tokens_2)
         logger.info(f"Trial {i+1}:\n{output}\n")
-    
+        logger.info(f"Trial {i+1}:\n{output_2}\n")
     # WIP
     #wandb.log({
     #    "eval/generate": output,
