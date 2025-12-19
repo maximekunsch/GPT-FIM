@@ -353,7 +353,7 @@ def eval_dataset(model, x, y_true):
     model.train()
 
 B = 1
-T = 1024
+T = 512
 texte = DataLoaderFIM(B=B, T=T)
 
 #eval = DataLoaderFIMeval(B=1, T=1024)
@@ -361,8 +361,8 @@ texte = DataLoaderFIM(B=B, T=T)
 #x_eval, y_eval = x_eval.to(device), y_eval.to(device)
 
 config = GPTConfig(
-    block_size=1024,
-    sliding_window=1024, # Currenly no sliding window, 
+    block_size=512,
+    sliding_window=512, # Currenly no sliding window, 
     vocab_size=100277,
     n_layer=9,
     n_head=16,
@@ -377,7 +377,7 @@ model.to(device)
 # optim = torch.optim.AdamW(model.parameters(), lr= 8e-5)
 optim = model.configure_optimizers(weight_decay=0.1, learning_rate=8e-5, betas=(0.9, 0.95), device_type=device)
 
-total_tokens_per_step = 524288
+total_tokens_per_step = 524288 # 2**19
 micro_tokens = B * T
 total_steps = 19000
 warmup_steps = 300
@@ -397,6 +397,7 @@ model.train()
 for i in range(total_steps):
     optim.zero_grad()
     for micro_step in range(grad_acc_steps):
+        logger.info(f"Accumulation {micro_step}")
         x, y = texte.next_batch()
         x, y = x.to(device), y.to(device)
         
