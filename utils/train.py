@@ -374,6 +374,8 @@ config = GPTConfig(
 
 model = GPT(config)
 model.to(device)
+if compile:
+    model = torch.compile(model)
 # optim = torch.optim.AdamW(model.parameters(), lr= 8e-5)
 optim = model.configure_optimizers(weight_decay=0.1, learning_rate=8e-5, betas=(0.9, 0.95), device_type=device)
 
@@ -396,7 +398,7 @@ scheduler = torch.optim.lr_scheduler.LambdaLR(optim, lr_lambda)
 model.train()
 for i in range(total_steps):
     optim.zero_grad()
-    for micro_step in range(grad_acc_steps):
+    for micro_step in range(grad_acc_steps):   
         logger.info(f"Accumulation {micro_step}")
         x, y = texte.next_batch()
         x, y = x.to(device), y.to(device)

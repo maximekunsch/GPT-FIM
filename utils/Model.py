@@ -67,8 +67,7 @@ class TunedSelfAttention(nn.Module):
             causal = torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size)
             window = torch.triu(torch.ones(config.block_size, config.block_size), diagonal=-self.sliding_window +1).view(1, 1, config.block_size, config.block_size)
             self.register_buffer("mask", causal * window)
-
-
+    
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
         
