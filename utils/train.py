@@ -1,4 +1,6 @@
-from Model import GPTConfig, GPT
+import argparse
+import sys
+import os
 import torch
 import tiktoken
 import random
@@ -6,32 +8,42 @@ import numpy as np
 from datasets import load_dataset
 import math
 
-from logging_config import logger
+# Ensure imports work whether running from root or utils/ directory
+script_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(script_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
+try:
+    from utils.logging_config import logger
+    from utils.Model import GPTConfig, GPT
+except ImportError:
+    from logging_config import logger
+    from Model import GPTConfig, GPT
 
 import wandb
 
-# Initialize a new run
-wandb.init(
-    project="gpt-training", 
-    config={
-        "batch_size": 1,
-        "block_size": 1024,
-        "learning_rate": 8e-5,
-        "n_layer": 9,
-        "n_head": 16,
-        "n_embd": 2048,
-        "dropout": 0
-    }
-)
-
-config = wandb.config
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description='GPT FIM Training')
+    parser.add_argument('--batch_size', type=int, default=1, help='Batch size')
+    parser.add_argument('--block_size', type=int, default=512, help='Block size')
+    parser.add_argument('--compile', action='store_true', default=True, help='Use PyTorch 2.0 compile')
+    parser.add_argument('--wandb_project', type=str, default='gpt-training', help='WandB project name')
+    parser.add_argument('--no_wandb', action='store_true', help='Disable WandB')
+    return parser.parse_args()
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-device_type = 'cuda' if 'cuda' in device else 'cpu'
-dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
-compile = True # use PyTorch 2.0 to compile the model to be faster
+
+def main():
+    args = parse_args()
+    
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device_type = 'cuda' if 'cuda' in device else 'cpu'
+    dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16'
+    compile_model = args.compile
+    
+    run_training(args)
 
 # If classic L2R
 class DataLoader:
@@ -352,81 +364,115 @@ def eval_dataset(model, x, y_true):
     
     model.train()
 
-B = 1
-T = 512
-texte = DataLoaderFIM(B=B, T=T)
 
-#eval = DataLoaderFIMeval(B=1, T=1024)
-#x_eval, y_eval = eval.next_batch()
-#x_eval, y_eval = x_eval.to(device), y_eval.to(device)
+def run_training(args):
+    B = args.batch_size
+    T = args.block_size
+    
+    # Initialize wandb if not disabled
+    if not args.no_wandb:
+        wandb.init(
+            project=args.wandb_project,
+            config={
+                "batch_size": B,
+                "block_size": T,
+                "learning_rate": 8e-5,
+                "n_layer": 9,
+                "n_head": 16,
+                "n_embd": 2048,
+                "dropout": 0
+            }
+        )
+        config = wandb.config
+    else:
+        # Use defaults if wandb is disabled
+        config = argparse.Namespace(
+            batch_size=B,
+            block_size=T,
+            learning_rate=8e-5,
+            n_layer=9,
+            n_head=16,
+            n_embd=2048,
+            dropout=0
+        )
+    
+    texte = DataLoaderFIM(B=B, T=T)
 
-config = GPTConfig(
-    block_size=512,
-    sliding_window=512, # Currenly no sliding window, 
-    vocab_size=100277,
-    n_layer=9,
-    n_head=16,
-    n_embd=2048,
-    softcap=20,
-    dropout=0,
-    bias=False
-)
+    # eval = DataLoaderFIMeval(B=1, T=1024)
+    # x_eval, y_eval = eval.next_batch()
+    # x_eval, y_eval = x_eval.to(device), y_eval.to(device)
 
-model = GPT(config)
-model.to(device)
-if compile:
-    model = torch.compile(model)
-# optim = torch.optim.AdamW(model.parameters(), lr= 8e-5)
-optim = model.configure_optimizers(weight_decay=0.1, learning_rate=8e-5, betas=(0.9, 0.95), device_type=device)
+    gpt_config = GPTConfig(
+        block_size=T,
+        sliding_window=T,  # Currently no sliding window
+        vocab_size=100277,
+        n_layer=9,
+        n_head=16,
+        n_embd=2048,
+        softcap=20,
+        dropout=0,
+        bias=False
+    )
 
-total_tokens_per_step = 524288 # 2**19
-micro_tokens = B * T
-total_steps = 19000
-warmup_steps = 300
+    model = GPT(gpt_config)
+    model.to(device)
+    if compile_model:
+        model = torch.compile(model)
+    
+    # optim = torch.optim.AdamW(model.parameters(), lr=8e-5)
+    optim = model.configure_optimizers(weight_decay=0.1, learning_rate=8e-5, betas=(0.9, 0.95), device_type=device_type)
 
-grad_acc_steps = total_tokens_per_step // micro_tokens
+    total_tokens_per_step = 524288  # 2**19
+    micro_tokens = B * T
+    total_steps = 19000
+    warmup_steps = 300
 
+    grad_acc_steps = total_tokens_per_step // micro_tokens
 
-def lr_lambda(step):
-    if step < warmup_steps:
-        return step / warmup_steps
-    progress = (step - warmup_steps) / (total_steps - warmup_steps)
-    return 0.5 * (1 + math.cos(math.pi * progress))
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return step / warmup_steps
+        progress = (step - warmup_steps) / (total_steps - warmup_steps)
+        return 0.5 * (1 + math.cos(math.pi * progress))
 
-scheduler = torch.optim.lr_scheduler.LambdaLR(optim, lr_lambda)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optim, lr_lambda)
 
-model.train()
-for i in range(total_steps):
-    optim.zero_grad()
-    for micro_step in range(grad_acc_steps):   
-        logger.info(f"Accumulation {micro_step}")
-        x, y = texte.next_batch()
-        x, y = x.to(device), y.to(device)
+    model.train()
+    for i in range(total_steps):
+        optim.zero_grad()
+        for micro_step in range(grad_acc_steps):
+            logger.info(f"Accumulation {micro_step}")
+            x, y = texte.next_batch()
+            x, y = x.to(device), y.to(device)
+            
+            logits, loss = model(x, y)
+            
+            # Backward
+            loss.backward()
         
-        logits, loss = model(x, y)
+        # Ensure FIM stability
+        norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         
-        # Backward
-        loss.backward()
-    
-    # Ensure FIM stability
-    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-    
-    # Optimizer
-    optim.step()
-    
-    # Scheduler
-    scheduler.step()
-    
-    # WANDB
-    current_lr = optim.param_groups[0]["lr"]
-    logger.info(f"Step {i} loss: {loss.item()}")
-    wandb.log({"step": i, "loss": loss.item(), "lr": current_lr, 'norm': norm})
-    if i % 500 == 0:
-        eval_generate(model)
-        # eval_dataset(model, x, y) not ready yet
+        # Optimizer
+        optim.step()
+        
+        # Scheduler
+        scheduler.step()
+        
+        # WANDB
+        current_lr = optim.param_groups[0]["lr"]
+        logger.info(f"Step {i} loss: {loss.item()}")
+        if not args.no_wandb:
+            wandb.log({"step": i, "loss": loss.item(), "lr": current_lr, 'norm': norm})
+        if i % 500 == 0:
+            eval_generate(model)
+            # eval_dataset(model, x, y) not ready yet
+
+    torch.save(model.state_dict(), "gpt_model.pt")
+    # wandb.save("gpt_model.pt")
+
+    logger.success('FINISHEDDDDDD !')
 
 
-torch.save(model.state_dict(), "gpt_model.pt")
-# wandb.save("gpt_model.pt")
-
-logger.success('FINISHEDDDDDD !')
+if __name__ == "__main__":
+    main()
