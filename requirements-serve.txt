@@ -1,0 +1,15 @@
+# Serving dependencies
+# Core
+fastapi
+uvicorn
+
+# Optional: vLLM (CUDA required, Linux recommended)
+# vllm
+
+# Optional: For model conversion to HF format
+# transformers
+# torch (already in venv)
+
+# For production
+# gunicorn
+# python-multipart
